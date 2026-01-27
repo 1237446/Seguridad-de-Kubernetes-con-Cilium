@@ -196,8 +196,103 @@ sudo ufw status numbered
 
 ## Cilium WireGard
 
+Es una funcionalidad nativa de Cilium que utiliza el protocolo **WireGuard** para encapsular y encriptar todo el tráfico de red que fluye entre los Pods de tu clúster Kubernetes.
+
+* **Privacidad Total:** Asegura que si alguien intercepta el tráfico físico entre tus nodos, solo verá paquetes encriptados e ilegibles.
+* **Rendimiento:** WireGuard es mucho más rápido y ligero que alternativas antiguas como IPsec, afectando mínimamente la latencia.
+* **Transparencia:** No requiere cambios en tus aplicaciones. Tus servicios siguen comunicándose por HTTP/gRPC normal, pero Cilium cifra el cable automáticamente.
+* **Zero Trust:** Cumple con requisitos de seguridad que exigen encriptación "en tránsito" dentro del centro de datos.
+
+---
+
+### Instalación y Activación
+
+Esta implementación asume que ya tienes Cilium instalado vía Helm. Usaremos el flag `--reuse-values` para mantener tu configuración actual y solo "encender" la encriptación.
+
+#### Paso A: Activar la Encriptación (Helm)
+
+Este comando actualiza la configuración de Cilium en el clúster.
+
+```bash
+helm upgrade cilium cilium/cilium \
+    --namespace kube-system \
+    --reuse-values \
+    --set encryption.enabled=true \
+    --set encryption.type=wireguard
+```
+
+* `--reuse-values`: Vital para no borrar configuraciones previas (como tu IPAM o configuración de L7).
+* `encryption.type=wireguard`: Especifica que usaremos el protocolo moderno WireGuard en lugar de IPsec.
+
+#### Paso B: Aplicar los Cambios (Rollout)
+
+Helm actualiza el ConfigMap, pero los agentes de Cilium que ya están corriendo necesitan reiniciarse para leer la nueva configuración y crear las interfaces de red `cilium_wg0`.
+
+```bash
+kubectl rollout restart ds/cilium -n kube-system
+```
+
+> [\!NOTE]
+> Esto reiniciará los agentes de red en cada nodo. Puede haber una micro-interrupción de red de unos segundos mientras se levantan las interfaces de túnel.
+
+---
+
+### Verificación
+
+Una vez que los Pods de Cilium estén en estado `Running`, verifica que la encriptación esté activa.
+
+```bash
+kubectl -n kube-system exec -ti ds/cilium -- cilium-dbg status | grep Encryption
+```
+
+Deberías ver una salida similar a esta:
+```text
+Encryption: WireGuard (UserKeys: 0, MaxSeqNum: 0/0)
+```
+
+Si dice `Disabled`, espera unos segundos más o revisa si los Pods se reiniciaron correctamente.
+
+---
+
+### Troubleshooting Rápido (Tips Extra)
+
+Si algo falla, verifica estos puntos clave:
+
+1. **El Puerto UDP:** Asegúrate de que el puerto **51871 UDP** (el puerto por defecto de WireGuard en Cilium) esté abierto en el firewall (UFW) entre todos los nodos.
+* *Regla UFW:* `ufw allow 51871/udp`
+2. **Kernel:** WireGuard funciona mejor si el módulo está nativo en el Kernel de Linux (Kernels 5.6+). Si usas una versión muy antigua, Cilium intentará usar una implementación en espacio de usuario (go-wireguard), que es mucho más lenta.
+3. **MTU:** WireGuard añade una cabecera extra a los paquetes. Cilium suele manejar el MTU automáticamente, pero si tienes problemas de conexión, verifica que el MTU de la interfaz `cilium_wg0` sea menor que el de tu interfaz física (`eth0`).
+
 ## Tetragon
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## Cilium Network Policy
 
 ## RBAC
+
+cilium hubble enable
+cilium hubble enable --ui
+cilium hubble ui --port-forward 12000
+
+
+
+HUBBLE_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/hubble/master/stable.txt)
+HUBBLE_ARCH=amd64
+if [ "$(uname -m)" = "aarch64" ]; then HUBBLE_ARCH=arm64; fi
+curl -L --fail --remote-name-all https://github.com/cilium/hubble/releases/download/$HUBBLE_VERSION/hubble-linux-${HUBBLE_ARCH}.tar.gz{,.sha256sum}
+sha256sum --check hubble-linux-${HUBBLE_ARCH}.tar.gz.sha256sum
+sudo tar xzvfC hubble-linux-${HUBBLE_ARCH}.tar.gz /usr/local/bin
+rm hubble-linux-${HUBBLE_ARCH}.tar.gz{,.sha256sum}
