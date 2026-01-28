@@ -1,0 +1,55 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "block-net-tools-exec"
+spec:
+  # Excepciones: Permitir que Rook-Ceph y otros pods autorizados funcionen
+  podSelector:
+    matchExpressions:
+    - key: allow-net-tools
+      operator: NotIn
+      values:
+      - "true"
+    - key: app
+      operator: NotIn
+      values:
+      - "rook-ceph-rgw"
+      - "rook-ceph-mgr"
+      - "rook-ceph-mon"
+      - "rook-ceph-osd"
+
+  kprobes:
+  - call: "sys_execve"
+    syscall: true
+    args:
+    - index: 0
+      type: "string"
+    selectors:
+    - matchArgs:      
+      - index: 0
+        operator: "Equal"
+        values:
+        # --- Herramientas de Transferencia ---
+        - "/usr/bin/curl"
+        - "/bin/curl"
+        - "/usr/bin/wget"
+        - "/bin/wget"
+        - "/usr/bin/nc"
+        - "/bin/nc"
+        - "/usr/bin/ncat"
+        
+        # --- Gestores de Paquetes (Debian/Ubuntu/Alpine/RHEL) ---
+        - "/usr/bin/apt"
+        - "/bin/apt"
+        - "/usr/bin/apt-get"
+        - "/bin/apt-get"
+        - "/usr/bin/dpkg"  # El motor detrás de apt
+        - "/bin/dpkg"
+        - "/sbin/apk"      # Alpine Linux (muy común en contenedores)
+        - "/bin/apk"
+        - "/usr/bin/yum"   # RHEL/CentOS
+        - "/usr/bin/dnf"   # Fedora/RHEL modernos
+        - "/usr/bin/pip"   # Python Package Installer (riesgo alto)
+        - "/usr/bin/npm"   # Node Package Manager (riesgo alto)
+      matchActions:
+      - action: Sigkill
