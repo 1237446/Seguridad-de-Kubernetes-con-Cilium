@@ -601,13 +601,170 @@ Si la UI no carga o no ves datos:
 > [\!TIP]
 > *Si seguiste la guía de UFW anterior, estos puertos ya deberían estar permitidos internamente.*
 
-
-
-
-
-
-
+---
 
 ## Cilium Network Policy
+
+Mientras que las *Network Policies* nativas de Kubernetes son como un portero básico (solo miran IP y Puerto), las **Cilium Network Policies** son como un agente de aduanas inteligente: pueden inspeccionar el contenido del paquete (HTTP, DNS, API calls) y entienden identidades lógicas. El CRD de Cilium permite:
+
+ * **Filtrado de Capa 7 (L7):** Permitir `GET /public` pero bloquear `POST /admin`.
+ * **Filtrado por DNS (FQDN):** Permitir salida a `google.com` sin saber sus IPs (que cambian constantemente).
+ * **Entidades Lógicas:** Usar palabras clave como `world`, `host`, `cluster` en lugar de rangos de IP (CIDRs).
+
+---
+
+## 2. Estructura Básica
+
+Un archivo YAML de CNP se divide en tres partes clave:
+
+1. **EndpointSelector:** ¿A quién protegemos? (El objetivo).
+2. **Ingress:** ¿Quién puede entrar? (Tráfico entrante).
+3. **Egress:** ¿A dónde pueden salir? (Tráfico saliente).
+
+---
+
+## 3. Ejemplos Prácticos (Copy & Paste)
+
+Aquí tienes 3 niveles de políticas, desde lo básico hasta lo avanzado.
+
+### Nivel 1: Aislamiento L3/L4 (El Muro Básico)
+
+*Caso de uso:* Proteger una base de datos. Solo el backend puede hablarle en el puerto 3306.
+
+```yaml
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: "db-access-control"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: database  # 1. Protegemos al pod 'database'
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        app: backend # 2. Solo el 'backend' puede entrar
+    toPorts:
+    - ports:
+      - port: "3306"
+        protocol: TCP
+
+```
+
+### Nivel 2: Filtrado DNS / FQDN (Salida Controlada)
+
+*Caso de uso:* Un pod necesita descargar actualizaciones de `github.com`, pero no quieres que tenga acceso a todo internet para evitar exfiltración de datos.
+
+```yaml
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: "allow-github-only"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: build-worker
+  egress:
+  - toFQDNs:
+    - matchName: "github.com"      # Acceso exacto
+    - matchPattern: "*.githubusercontent.com" # Acceso con comodín
+    toPorts:
+    - ports:
+      - port: "443"
+        protocol: TCP
+  # IMPORTANTE: Permitir consultas DNS (puerto 53) para resolver esos nombres
+  - toEndpoints:
+    - matchLabels:
+        k8s-app: kube-dns
+        io.kubernetes.pod.namespace: kube-system
+    toPorts:
+    - ports:
+      - port: "53"
+        protocol: UDP
+
+```
+
+### Nivel 3: Filtrado HTTP L7 (El Guardia Inteligente)
+
+*Caso de uso:* Tienes una API pública. Quieres que el mundo vea los datos (`GET`), pero que nadie pueda borrarlos (`DELETE`) excepto una IP de administración interna.
+
+```yaml
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: "secure-api-l7"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: my-api
+  ingress:
+  - fromEntities:
+    - world # Todo internet
+    toPorts:
+    - ports:
+      - port: "80"
+        protocol: TCP
+      rules:
+        http:
+        - method: "GET"
+          path: "/public/.*" # Permitir ver datos públicos
+        # Todo lo demás (POST, DELETE, /admin) será denegado por defecto
+
+```
+
+---
+
+## 4. Aplicación y Verificación
+
+### Paso A: Aplicar la política
+
+Se aplica igual que cualquier manifiesto de Kubernetes:
+
+```bash
+kubectl apply -f mi-politica-cilium.yaml
+
+```
+
+### Paso B: Verificar el estado
+
+Cilium tiene su propio estado para las políticas. Verifica que esté cargada:
+
+```bash
+kubectl get cnp
+# O para más detalle:
+kubectl describe cnp mi-politica-cilium
+
+```
+
+### Paso C: Auditoría con Hubble (La prueba real)
+
+Si ya instalaste Hubble (guía anterior), úsalo para ver si tu política está bloqueando (`DROP`) o permitiendo (`FORWARD`) el tráfico en vivo:
+
+```bash
+# Ver tráfico denegado por política
+hubble observe --verdict DROP
+
+```
+
+---
+
+## 5. ¡Cuidado! El Principio de "Default Deny"
+
+Es vital entender esto: **En el momento en que aplicas UNA política** que selecciona a un Pod (ej. `app: database`), Cilium cambia automáticamente el modo de ese pod a **"Denegar todo por defecto"**.
+
+* Si defines reglas de `Ingress`, se bloquea todo el tráfico entrante que no esté explícitamente permitido.
+* Si defines reglas de `Egress`, se bloquea todo el tráfico saliente que no esté explícitamente permitido.
+
+**Consejo de Seguridad:** Nunca apliques una política en Producción sin haberla probado antes en Desarrollo, o cortarás el servicio.
+
+---
+
+## 💡 Herramienta Recomendada: Network Policy Editor
+
+Escribir YAML desde cero es propenso a errores. Cilium ofrece un editor visual gratuito que genera el YAML por ti:
+
+* [Network Policy Editor](https://www.google.com/search?q=https://editor.cilium.io/)
+
+Puedes dibujar visualmente "El frontend habla con el backend" y te dará el código listo para copiar.
 
 ## RBAC
