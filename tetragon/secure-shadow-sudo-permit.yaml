@@ -1,0 +1,40 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "secure-shadow-ssh-safe"
+spec:
+  kprobes:
+  - call: "security_file_permission"
+    syscall: false
+    return: true
+    args:
+    - index: 0
+      type: "file" 
+    - index: 1
+      type: "int"
+    returnArg:
+      index: 0
+      type: "int"
+    returnArgAction: "Post"
+    selectors:
+    - matchArgs:      
+      - index: 0
+        operator: "Equal"
+        values:
+        - "/etc/shadow"
+      - index: 1
+        operator: "Equal"
+        values:
+        - "4" # MAY_READ
+      
+      # --- EXCEPCIONES (BINARIOS PERMITIDOS) ---
+      matchBinaries:
+      - operator: "NotIn"
+        values:
+        - "/usr/bin/sudo"       # Permitir sudo
+        - "/usr/sbin/sshd"      # Permitir Servidor SSH <--- ESTO FALTABA
+        - "/usr/bin/ssh"        # Cliente SSH (a veces necesario)
+        - "/usr/bin/login"      # Login de consola local
+      
+      matchActions:
+      - action: Sigkill
