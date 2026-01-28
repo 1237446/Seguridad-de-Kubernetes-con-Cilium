@@ -265,9 +265,243 @@ Si algo falla, verifica estos puntos clave:
 
 ## Tetragon
 
+Tetragon es una herramienta de **seguridad en tiempo real y observabilidad** basada en **eBPF**. A diferencia de los antivirus tradicionales o herramientas de seguridad que funcionan en el "espacio de usuario" (lento y vulnerable), Tetragon vive directamente en el **Kernel** de Linux.
+
+* **Caja Negra del Clúster:** Registra *cada* proceso que se ejecuta, cada archivo que se toca y cada conexión de red que se abre, incluso si el contenedor dura milisegundos.
+* **Prevención de Ataques:** Puede detener (matar) un proceso malicioso en el momento exacto en que intenta hacer algo prohibido (como abrir `/etc/shadow`), antes de que el daño ocurra.
+* **Sin Puntos Ciegos:** Como usa eBPF, el malware no puede ocultarse modificando los logs del sistema, ya que Tetragon captura los datos antes de que lleguen a la aplicación.
+
+### Instalación
+
+Tetragon se instala generalmente como un DaemonSet (un agente en cada nodo). Usaremos el comando que proporcionaste, asumiendo que el repositorio de Cilium ya está añadido.
+
+#### Paso A: Despliegue con Helm
+
+Este comando instala los agentes de Tetragon en el espacio de nombres `kube-system`.
+
+```bash
+helm install tetragon cilium/tetragon -n kube-system
+```
+
+Al ejecutar ese comando:
+
+ * Se despliega el **Tetragon Agent** en todos tus nodos.
+ * El agente carga programas **eBPF** en el Kernel del host.
+ * Empieza a escuchar eventos del sistema (syscalls) silenciosamente.
+   
+> [\!NOTE]
+> Si recibes un error de "repo not found", asegúrate de ejecutar antes `helm repo add cilium https://helm.cilium.io` y `helm repo update`.
+
+#### Paso B: Verificación y Uso
+
+A diferencia de Cilium, Tetragon no suele tener un "status" binario de encendido/apagado, sino que se verifica viendo si está "escuchando".
+
+```bash
+kubectl get pods -n kube-system | grep tetragon
+```
+```bash
+tetragon-48fh7                                          2/2     Running     0               29s
+tetragon-9mrmf                                          2/2     Running     0               29s
+tetragon-dzms4                                          2/2     Running     0               29s
+tetragon-nqjz9                                          2/2     Running     0               29s
+tetragon-operator-5c67c579b7-k8tmm                      1/1     Running     0               29s
+tetragon-rjdrf                                          2/2     Running     0               29s
+tetragon-sbmdk                                          2/2     Running     0               29s
+```
+
+#### Ver la "Magia" (Logs en tiempo real)
+
+Para ver qué está pasando en tu clúster *ahora mismo*:
+
+```bash
+kubectl exec -it -n kube-system ds/tetragon -c tetragon -- tetra getevents -o compact
+```
+```bash
+🚀 process rook-ceph/rook-ceph-operator-5cfc4646c7-6x4dg /usr/bin/ceph -s /usr/bin/ceph status --format json --connect-timeout=15 --cluster=rook-ceph --conf=/var/lib/rook/rook-ceph/rook-ceph.config --name=client.admin --keyring=/var/lib/rook/rook-ceph/client.admin.keyring 
+💥 exit    rook-ceph/rook-ceph-operator-5cfc4646c7-6x4dg /usr/bin/ceph -s /usr/bin/ceph status --format json --connect-timeout=15 --cluster=rook-ceph --conf=/var/lib/rook/rook-ceph/rook-ceph.config --name=client.admin --keyring=/var/lib/rook/rook-ceph/client.admin.keyring 0 
+🚀 process rook-ceph/rook-ceph-operator-5cfc4646c7-6x4dg /usr/bin/ceph -s /usr/bin/ceph versions --connect-timeout=15 --cluster=rook-ceph --conf=/var/lib/rook/rook-ceph/rook-ceph.config --name=client.admin --keyring=/var/lib/rook/rook-ceph/client.admin.keyring --format json 
+💥 exit    rook-ceph/rook-ceph-operator-5cfc4646c7-6x4dg /usr/bin/ceph -s /usr/bin/ceph versions --connect-timeout=15 --cluster=rook-ceph --conf=/var/lib/rook/rook-ceph/rook-ceph.config --name=client.admin --keyring=/var/lib/rook/rook-ceph/client.admin.keyring --format json 0
+```
+
+* **Lo que verás:** Un flujo rápido de datos. Cada vez que alguien hace un `curl`, abre un archivo o ejecuta un comando en *cualquier* pod, aparecerá ahí.
+
+---
 
 
+### El siguiente nivel: TracingPolicy (Bloqueo Activo)
 
+Instalarlo es solo el primer paso. El verdadero poder de Tetragon reside en las **TracingPolicies** (Políticas de Rastreo).
+
+Por defecto, Tetragon solo *observa*. Para bloquear ataques, aplicamos archivos YAML (CRDs) que definen qué actividades están prohibidas. Cuando se viola una regla, Tetragon envía una señal `SIGKILL` desde el Kernel, matando el proceso malicioso instantáneamente antes de que termine de ejecutarse.
+
+Aquí tienes 3 políticas esenciales basadas en tus archivos para endurecer el clúster:
+
+#### Bloqueo de Herramientas de Red y Gestores de Paquetes
+
+**Archivo:** `block-net-tools-exec.yaml`
+
+Esta política es vital para evitar la técnica de "Living off the Land" (usar herramientas ya instaladas para atacar).
+
+* **Qué hace:** Prohíbe ejecutar `curl`, `wget`, `nc` (usados para descargar malware o exfiltrar datos) y bloquea gestores como `apt`, `apk` o `pip` (para evitar instalar herramientas de hacking).
+* **Inteligencia:** Incluye una **Lista Blanca (Excepciones)** para que pods de infraestructura crítica (como `rook-ceph`) sigan funcionando sin problemas.
+
+```yaml
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "block-net-tools-exec"
+spec:
+  # Excepción: No aplicar a Rook-Ceph ni a pods marcados con allow-net-tools=true
+  podSelector:
+    matchExpressions:
+    - key: allow-net-tools
+      operator: NotIn
+      values: ["true"]
+    - key: app
+      operator: NotIn
+      values: ["rook-ceph-rgw", "rook-ceph-mgr", "rook-ceph-mon", "rook-ceph-osd"]
+
+  kprobes:
+  - call: "sys_execve"
+    syscall: true
+    args:
+    - index: 0
+      type: "string"
+    selectors:
+    - matchArgs:      
+      - index: 0
+        operator: "Equal"
+        values:
+        # Herramientas de Transferencia
+        - "/usr/bin/curl"
+        - "/bin/curl"
+        - "/usr/bin/wget"
+        - "/usr/bin/nc"
+        # Gestores de Paquetes
+        - "/usr/bin/apt"
+        - "/sbin/apk"
+        - "/usr/bin/pip"
+        - "/usr/bin/npm"
+      matchActions:
+      - action: Sigkill # ☠️ Mata el proceso
+
+```
+
+#### Inmutabilidad del Sistema (Anti-Tampering)
+
+**Archivo:** `block-system-writes.yaml`
+
+Si un atacante logra entrar, intentará instalar rootkits o modificar binarios del sistema. Esta política congela las carpetas críticas.
+
+* **Qué hace:** Intercepta la llamada `security_file_permission`. Si alguien intenta **escribir** (`MAY_WRITE = 2`) en `/bin`, `/usr/bin`, `/boot`, etc., es eliminado.
+
+```yaml
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "enforce-immutable-system"
+spec:
+  kprobes:
+  - call: "security_file_permission"
+    syscall: false
+    return: true
+    args:
+    - index: 0
+      type: "file" 
+    - index: 1
+      type: "int"
+    returnArg:
+      index: 0
+      type: "int"
+    returnArgAction: "Post"
+    selectors:
+    - matchArgs:      
+      - index: 0
+        operator: "Prefix"
+        values: ["/bin", "/usr/bin", "/sbin", "/boot", "/lib"]
+      - index: 1
+        operator: "Equal"
+        values: ["2"] # 2 significa Permiso de Escritura
+      matchActions:
+      - action: Sigkill
+
+```
+
+#### Protección de Credenciales (/etc/shadow)
+
+**Archivo:** `secure-shadow-sudo-deny.yaml`
+
+El archivo `/etc/shadow` contiene los hashes de las contraseñas. Nadie debería leerlo excepto el sistema de login y backups autorizados.
+
+* **Qué hace:** Bloquea cualquier lectura (`MAY_READ = 4`) a `/etc/shadow`.
+* **Lista Blanca (Binaries):** Permite explícitamente procesos legítimos como `sshd` (para que puedas entrar) y  `sudo`.
+
+```yaml
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "secure-shadow-ssh-safe"
+spec:
+  kprobes:
+  - call: "security_file_permission"
+    syscall: false
+    return: true
+    args:
+    - index: 0
+      type: "file" 
+    - index: 1
+      type: "int"
+    returnArg:
+      index: 0
+      type: "int"
+    returnArgAction: "Post"
+    selectors:
+    - matchArgs:      
+      - index: 0
+        operator: "Equal"
+        values: ["/etc/shadow"]
+      - index: 1
+        operator: "Equal"
+        values: ["4"] # Lectura
+      
+      # Solo estos binarios pueden leer el archivo:
+      matchBinaries:
+      - operator: "NotIn"
+        values:
+        - "/usr/bin/sudo"
+        - "/usr/sbin/sshd"
+      
+      matchActions:
+      - action: Sigkill
+
+```
+
+---
+
+#### Cómo aplicar y probar
+
+**Aplicar las políticas:**
+Guarda los YAML y aplícalos como cualquier objeto de Kubernetes:
+```bash
+kubectl apply -f block-net-tools-exec.yaml
+kubectl apply -f block-system-writes.yaml
+kubectl apply -f secure-shadow-sudo-deny.yaml
+
+```
+
+**Prueba de Fuego (Verificación):**
+Intenta ejecutar un curl desde un pod cualquiera:
+```bash
+kubectl exec -it mi-pod -- curl google.com
+```
+**Resultado esperado:**
+```text
+command terminated with exit code 137
+```
+
+*(El código 137 indica `SIGKILL`. El comando ni siquiera llegó a ejecutarse; Tetragon lo mató).*
+3. **Ver el Log del Asesinato:**
+En los logs de Tetragon verás el evento con el emoji 💥 y la acción `SIGKILL`.
 
 
 
@@ -283,12 +517,6 @@ Si algo falla, verifica estos puntos clave:
 
 ## RBAC
 
-cilium hubble enable
-cilium hubble enable --ui
-cilium hubble ui --port-forward 12000
-
-
-
 HUBBLE_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/hubble/master/stable.txt)
 HUBBLE_ARCH=amd64
 if [ "$(uname -m)" = "aarch64" ]; then HUBBLE_ARCH=arm64; fi
@@ -296,3 +524,7 @@ curl -L --fail --remote-name-all https://github.com/cilium/hubble/releases/downl
 sha256sum --check hubble-linux-${HUBBLE_ARCH}.tar.gz.sha256sum
 sudo tar xzvfC hubble-linux-${HUBBLE_ARCH}.tar.gz /usr/local/bin
 rm hubble-linux-${HUBBLE_ARCH}.tar.gz{,.sha256sum}
+
+cilium hubble enable
+cilium hubble enable --ui
+cilium hubble ui --port-forward 12000
