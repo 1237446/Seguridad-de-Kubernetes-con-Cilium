@@ -1,0 +1,51 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "secure-shadow-ssh-safe" # Usamos el mismo nombre para actualizar la existente
+spec:
+  kprobes:
+  - call: "security_file_permission"
+    syscall: false
+    return: true
+    args:
+    - index: 0
+      type: "file" 
+    - index: 1
+      type: "int"
+    returnArg:
+      index: 0
+      type: "int"
+    returnArgAction: "Post"
+    selectors:
+    - matchArgs:      
+      - index: 0
+        operator: "Equal"
+        values: ["/etc/shadow"]
+      - index: 1
+        operator: "Equal"
+        values: ["4"] # MAY_READ
+      
+      # =======================================================
+      # LISTA BLANCA (Binarios Autorizados)
+      # =======================================================
+      matchBinaries:
+      - operator: "NotIn"
+        values:
+        # 1. Administración del Sistema (SSH/Sudo)
+        - "/usr/bin/sudo"
+        - "/usr/sbin/sshd"
+        - "/usr/bin/ssh"
+        - "/usr/bin/login"
+        - "/usr/bin/passwd"
+        
+        # 2. BACULA & WEB (Agregados según tus logs)
+        - "/usr/sbin/bacula-dir"    # <-- El Director
+        - "/usr/sbin/php-fpm84"     # <-- Bacularis Web (PHP)
+        - "/usr/sbin/bacula-sd"     # <-- Storage Daemon (Prevención)
+        - "/usr/sbin/bacula-fd"     # <-- File Daemon (Prevención)
+      
+      # =======================================================
+      # ACCIÓN: MATAR AL RESTO
+      # =======================================================
+      matchActions:
+      - action: Sigkill
