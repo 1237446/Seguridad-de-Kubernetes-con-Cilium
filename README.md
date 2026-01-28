@@ -7,7 +7,8 @@ Es vital distinguir las capas de seguridad para evitar cortes de servicio:
 * **Cilium (CNI):** Gestiona la red interna de los contenedores. UFW **no** debe interferir con la comunicación interna de los Pods ni con las interfaces virtuales que Cilium crea (`cilium_host`, `cilium_vxlan`, `cilium_wg0`).
 
 ---
-## UFW (Uncomplicated Firewall o Cortafuegos No Complicado)
+
+## UFW (Cortafuegos No Complicado)
 UFW es una interfaz de gestión simplificada para el sistema de filtrado de paquetes de Linux (netfilter/iptables).
 
 En Kubernetes, la gestión de redes es compleja porque K8s manipula dinámicamente las reglas de iptables para que los servicios y pods se comuniquen. Pero La utilidad principal de UFW en K8s no es gestionar la red de los contenedores, sino proteger al Nodo (el servidor host).
@@ -25,29 +26,25 @@ En Kubernetes, la gestión de redes es compleja porque K8s manipula dinámicamen
 
 Kubernetes requiere que el tráfico pueda pasar a través del nodo hacia los contenedores.
 
-1. Edita la configuración predeterminada de UFW:
+Edita la configuración predeterminada de UFW:
 ```bash
 sudo nano /etc/default/ufw
-
 ```
 
-2. Busca y modifica la política de reenvío:
+Busca y modifica la política de reenvío:
 ```bash
 # Cambiar DROP por ACCEPT
 DEFAULT_FORWARD_POLICY="ACCEPT"
-
 ```
 
-3. Aplica los cambios (sin activar el firewall todavía):
+Aplica los cambios (sin activar el firewall todavía):
 ```bash
 sudo ufw reload
-
 ```
 
 #### B. Definir Variables (Para facilitar el copiado)
 
 Antes de ejecutar las reglas, define estas variables en tu terminal según tu entorno:
-
 ```bash
 # Rango de IPs de tus Nodos (Ej. 192.168.1.0/24)
 export K8S_NODES_CIDR="192.168.1.0/24"
@@ -57,10 +54,7 @@ export ADMIN_IP="203.0.113.5"
 export POD_CIDR="10.42.0.0/16"
 # CIDR de los Servicios
 export SVC_CIDR="10.43.0.0/16"
-
 ```
-
----
 
 ### Implementación de Reglas
 
@@ -85,7 +79,6 @@ sudo ufw allow from $ADMIN_IP to any port 22 proto tcp
 # 5. Permitir acceso a la API de Kubernetes (Solo Admin y Nodos)
 sudo ufw allow from $ADMIN_IP to any port 6443 proto tcp
 sudo ufw allow from $K8S_NODES_CIDR to any port 6443 proto tcp
-
 ```
 
 #### Fase 2: Comunicación entre Nodos (Kubernetes Core)
@@ -105,7 +98,6 @@ sudo ufw allow from $K8S_NODES_CIDR to any port 9345 proto tcp
 # 9. NodePorts (Rango por defecto para servicios tipo NodePort)
 # Nota: Esto abre el rango a CUALQUIER IP. Si usas MetalLB, esto es menos crítico.
 sudo ufw allow 30000:32767/tcp
-
 ```
 
 #### Fase 3: Reglas Específicas para Cilium + WireGuard
@@ -132,7 +124,6 @@ sudo ufw allow in on cilium_wg0 to any
 # 14. Permitir tráfico desde los rangos de Pods y Servicios
 sudo ufw allow from $POD_CIDR
 sudo ufw allow from $SVC_CIDR
-
 ```
 
 #### Fase 4: Observabilidad (Hubble) - Opcional
@@ -144,13 +135,10 @@ Si usas Hubble para ver el mapa de red, asegura estos puertos (idealmente no exp
 sudo ufw allow from $K8S_NODES_CIDR to any port 4244:4245 proto tcp
 # Hubble UI (Si accedes vía port-forward no es necesario abrirlo, si usas NodePort sí)
 # sudo ufw allow from $ADMIN_IP to any port 4246 proto tcp
-
 ```
 
 > [\!TIP]
 > Si desea automatizar la aplicacion de reglas puede usar el script UFW.sh para una aplicacion rapida, sin olvidar editar las variables 
-
----
 
 #### Consideración Especial: MetalLB
 
@@ -158,14 +146,13 @@ UFW puede interferir con MetalLB dependiendo del modo:
 
 * **Modo Layer 2 (ARP):** Generalmente funciona bien con las reglas anteriores. El tráfico llega al puerto del servicio y kube-proxy/cilium lo maneja.
 * **Modo BGP:** Si configuras MetalLB con BGP, necesitas permitir el puerto **179 TCP** entre los nodos y tu router.
-```bash
-sudo ufw allow from <IP_ROUTER> to any port 179 proto tcp
-```
+  
+  ```bash
+  sudo ufw allow from <IP_ROUTER> to any port 179 proto tcp
+  ```
 
 > [\!IMPORTANT]
 > UFW filtra la entrada al **Nodo**. Si MetalLB asigna una IP externa a un servicio, el tráfico llega a la interfaz física del nodo. Asegúrate de que las reglas de `ufw allow` coincidan con los puertos que tus LoadBalancers están exponiendo si no usas rangos específicos.
-
----
 
 #### Activación y Verificación
 
@@ -203,8 +190,6 @@ Es una funcionalidad nativa de Cilium que utiliza el protocolo **WireGuard** par
 * **Transparencia:** No requiere cambios en tus aplicaciones. Tus servicios siguen comunicándose por HTTP/gRPC normal, pero Cilium cifra el cable automáticamente.
 * **Zero Trust:** Cumple con requisitos de seguridad que exigen encriptación "en tránsito" dentro del centro de datos.
 
----
-
 ### Instalación y Activación
 
 Esta implementación asume que ya tienes Cilium instalado vía Helm. Usaremos el flag `--reuse-values` para mantener tu configuración actual y solo "encender" la encriptación.
@@ -235,7 +220,6 @@ kubectl rollout restart ds/cilium -n kube-system
 > [\!NOTE]
 > Esto reiniciará los agentes de red en cada nodo. Puede haber una micro-interrupción de red de unos segundos mientras se levantan las interfaces de túnel.
 
----
 
 ### Verificación
 
@@ -252,8 +236,6 @@ Encryption: WireGuard (UserKeys: 0, MaxSeqNum: 0/0)
 
 Si dice `Disabled`, espera unos segundos más o revisa si los Pods se reiniciaron correctamente.
 
----
-
 ### Troubleshooting Rápido (Tips Extra)
 
 Si algo falla, verifica estos puntos clave:
@@ -262,6 +244,8 @@ Si algo falla, verifica estos puntos clave:
 * *Regla UFW:* `ufw allow 51871/udp`
 2. **Kernel:** WireGuard funciona mejor si el módulo está nativo en el Kernel de Linux (Kernels 5.6+). Si usas una versión muy antigua, Cilium intentará usar una implementación en espacio de usuario (go-wireguard), que es mucho más lenta.
 3. **MTU:** WireGuard añade una cabecera extra a los paquetes. Cilium suele manejar el MTU automáticamente, pero si tienes problemas de conexión, verifica que el MTU de la interfaz `cilium_wg0` sea menor que el de tu interfaz física (`eth0`).
+
+---
 
 ## Tetragon
 
@@ -325,9 +309,6 @@ kubectl exec -it -n kube-system ds/tetragon -c tetragon -- tetra getevents -o co
 
 * **Lo que verás:** Un flujo rápido de datos. Cada vez que alguien hace un `curl`, abre un archivo o ejecuta un comando en *cualquier* pod, aparecerá ahí.
 
----
-
-
 ### El siguiente nivel: TracingPolicy (Bloqueo Activo)
 
 Instalarlo es solo el primer paso. El verdadero poder de Tetragon reside en las **TracingPolicies** (Políticas de Rastreo).
@@ -345,47 +326,46 @@ Esta política es vital para evitar la técnica de "Living off the Land" (usar h
 * **Qué hace:** Prohíbe ejecutar `curl`, `wget`, `nc` (usados para descargar malware o exfiltrar datos) y bloquea gestores como `apt`, `apk` o `pip` (para evitar instalar herramientas de hacking).
 * **Inteligencia:** Incluye una **Lista Blanca (Excepciones)** para que pods de infraestructura crítica (como `rook-ceph`) sigan funcionando sin problemas.
 
-```yaml
-apiVersion: cilium.io/v1alpha1
-kind: TracingPolicy
-metadata:
-  name: "block-net-tools-exec"
-spec:
-  # Excepción: No aplicar a Rook-Ceph ni a pods marcados con allow-net-tools=true
-  podSelector:
-    matchExpressions:
-    - key: allow-net-tools
-      operator: NotIn
-      values: ["true"]
-    - key: app
-      operator: NotIn
-      values: ["rook-ceph-rgw", "rook-ceph-mgr", "rook-ceph-mon", "rook-ceph-osd"]
-
-  kprobes:
-  - call: "sys_execve"
-    syscall: true
-    args:
-    - index: 0
-      type: "string"
-    selectors:
-    - matchArgs:      
+  ```yaml
+  apiVersion: cilium.io/v1alpha1
+  kind: TracingPolicy
+  metadata:
+    name: "block-net-tools-exec"
+  spec:
+    # Excepción: No aplicar a Rook-Ceph ni a pods marcados con allow-net-tools=true
+    podSelector:
+      matchExpressions:
+      - key: allow-net-tools
+        operator: NotIn
+        values: ["true"]
+      - key: app
+        operator: NotIn
+        values: ["rook-ceph-rgw", "rook-ceph-mgr", "rook-ceph-mon", "rook-ceph-osd"]
+  
+    kprobes:
+    - call: "sys_execve"
+      syscall: true
+      args:
       - index: 0
-        operator: "Equal"
-        values:
-        # Herramientas de Transferencia
-        - "/usr/bin/curl"
-        - "/bin/curl"
-        - "/usr/bin/wget"
-        - "/usr/bin/nc"
-        # Gestores de Paquetes
-        - "/usr/bin/apt"
-        - "/sbin/apk"
-        - "/usr/bin/pip"
-        - "/usr/bin/npm"
-      matchActions:
-      - action: Sigkill # ☠️ Mata el proceso
-
-```
+        type: "string"
+      selectors:
+      - matchArgs:      
+        - index: 0
+          operator: "Equal"
+          values:
+          # Herramientas de Transferencia
+          - "/usr/bin/curl"
+          - "/bin/curl"
+          - "/usr/bin/wget"
+          - "/usr/bin/nc"
+          # Gestores de Paquetes
+          - "/usr/bin/apt"
+          - "/sbin/apk"
+          - "/usr/bin/pip"
+          - "/usr/bin/npm"
+        matchActions:
+        - action: Sigkill # Mata el proceso
+  ```
 
 #### Inmutabilidad del Sistema (Anti-Tampering)
 
@@ -395,37 +375,36 @@ Si un atacante logra entrar, intentará instalar rootkits o modificar binarios d
 
 * **Qué hace:** Intercepta la llamada `security_file_permission`. Si alguien intenta **escribir** (`MAY_WRITE = 2`) en `/bin`, `/usr/bin`, `/boot`, etc., es eliminado.
 
-```yaml
-apiVersion: cilium.io/v1alpha1
-kind: TracingPolicy
-metadata:
-  name: "enforce-immutable-system"
-spec:
-  kprobes:
-  - call: "security_file_permission"
-    syscall: false
-    return: true
-    args:
-    - index: 0
-      type: "file" 
-    - index: 1
-      type: "int"
-    returnArg:
-      index: 0
-      type: "int"
-    returnArgAction: "Post"
-    selectors:
-    - matchArgs:      
+  ```yaml
+  apiVersion: cilium.io/v1alpha1
+  kind: TracingPolicy
+  metadata:
+    name: "enforce-immutable-system"
+  spec:
+    kprobes:
+    - call: "security_file_permission"
+      syscall: false
+      return: true
+      args:
       - index: 0
-        operator: "Prefix"
-        values: ["/bin", "/usr/bin", "/sbin", "/boot", "/lib"]
+        type: "file" 
       - index: 1
-        operator: "Equal"
-        values: ["2"] # 2 significa Permiso de Escritura
-      matchActions:
-      - action: Sigkill
-
-```
+        type: "int"
+      returnArg:
+        index: 0
+        type: "int"
+      returnArgAction: "Post"
+      selectors:
+      - matchArgs:      
+        - index: 0
+          operator: "Prefix"
+          values: ["/bin", "/usr/bin", "/sbin", "/boot", "/lib"]
+        - index: 1
+          operator: "Equal"
+          values: ["2"] # 2 significa Permiso de Escritura
+        matchActions:
+        - action: Sigkill
+  ```
 
 #### Protección de Credenciales (/etc/shadow)
 
@@ -436,47 +415,44 @@ El archivo `/etc/shadow` contiene los hashes de las contraseñas. Nadie debería
 * **Qué hace:** Bloquea cualquier lectura (`MAY_READ = 4`) a `/etc/shadow`.
 * **Lista Blanca (Binaries):** Permite explícitamente procesos legítimos como `sshd` (para que puedas entrar) y  `sudo`.
 
-```yaml
-apiVersion: cilium.io/v1alpha1
-kind: TracingPolicy
-metadata:
-  name: "secure-shadow-ssh-safe"
-spec:
-  kprobes:
-  - call: "security_file_permission"
-    syscall: false
-    return: true
-    args:
-    - index: 0
-      type: "file" 
-    - index: 1
-      type: "int"
-    returnArg:
-      index: 0
-      type: "int"
-    returnArgAction: "Post"
-    selectors:
-    - matchArgs:      
+  ```yaml
+  apiVersion: cilium.io/v1alpha1
+  kind: TracingPolicy
+  metadata:
+    name: "secure-shadow-ssh-safe"
+  spec:
+    kprobes:
+    - call: "security_file_permission"
+      syscall: false
+      return: true
+      args:
       - index: 0
-        operator: "Equal"
-        values: ["/etc/shadow"]
+        type: "file" 
       - index: 1
-        operator: "Equal"
-        values: ["4"] # Lectura
-      
-      # Solo estos binarios pueden leer el archivo:
-      matchBinaries:
-      - operator: "NotIn"
-        values:
-        - "/usr/bin/sudo"
-        - "/usr/sbin/sshd"
-      
-      matchActions:
-      - action: Sigkill
-
-```
-
----
+        type: "int"
+      returnArg:
+        index: 0
+        type: "int"
+      returnArgAction: "Post"
+      selectors:
+      - matchArgs:      
+        - index: 0
+          operator: "Equal"
+          values: ["/etc/shadow"]
+        - index: 1
+          operator: "Equal"
+          values: ["4"] # Lectura
+        
+        # Solo estos binarios pueden leer el archivo:
+        matchBinaries:
+        - operator: "NotIn"
+          values:
+          - "/usr/bin/sudo"
+          - "/usr/sbin/sshd"
+        
+        matchActions:
+        - action: Sigkill
+  ```
 
 #### Cómo aplicar y probar
 
@@ -486,7 +462,6 @@ Guarda los YAML y aplícalos como cualquier objeto de Kubernetes:
 kubectl apply -f block-net-tools-exec.yaml
 kubectl apply -f block-system-writes.yaml
 kubectl apply -f secure-shadow-sudo-deny.yaml
-
 ```
 
 **Prueba de Fuego (Verificación):**
@@ -500,11 +475,131 @@ command terminated with exit code 137
 ```
 
 *(El código 137 indica `SIGKILL`. El comando ni siquiera llegó a ejecutarse; Tetragon lo mató).*
-3. **Ver el Log del Asesinato:**
+**Ver el Log del Asesinato:**
 En los logs de Tetragon verás el evento con el emoji 💥 y la acción `SIGKILL`.
 
 
+Aquí tienes la guía para **Hubble**, el componente de observabilidad de Cilium, siguiendo el mismo formato directo y práctico.
 
+---
+
+## Observabilidad Visual con Hubble
+
+Hubble es el "telescopio" de Cilium. Es una plataforma de observabilidad distribuida que se monta sobre eBPF para ver exactamente cómo fluyen los paquetes de red dentro de tu clúster Kubernetes.
+
+ * **Mapa de Servicios:** Dibuja automáticamente un mapa visual de quién habla con quién (Services, Pods, World).
+ * **Depuración de Red:** Te permite ver si un paquete fue **DROP** (bloqueado por política) o **FORWARD** (permitido) en tiempo real, sin usar `tcpdump`.
+ * **Visibilidad L7:** Puede inspeccionar tráfico HTTP, DNS y Kafka (ej. ver qué URL exacta dio un error 500).
+
+### Instalación del Cliente CLI
+
+Para interactuar con Hubble desde tu terminal (sin usar la interfaz gráfica), necesitas el binario `hubble`. Los comandos que proporcionaste hacen lo siguiente: detectan tu arquitectura (Intel/AMD vs ARM), descargan la última versión estable, verifican la integridad (checksum) y lo instalan en tu sistema.
+
+#### Paso A: Descargar e Instalar
+
+Copia y pega este bloque completo en tu terminal:
+
+```bash
+# 1. Detectar versión estable y arquitectura
+HUBBLE_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/hubble/master/stable.txt)
+HUBBLE_ARCH=amd64
+if [ "$(uname -m)" = "aarch64" ]; then HUBBLE_ARCH=arm64; fi
+# 2. Descargar binario y archivo de verificación
+curl -L --fail --remote-name-all https://github.com/cilium/hubble/releases/download/$HUBBLE_VERSION/hubble-linux-${HUBBLE_ARCH}.tar.gz{,.sha256sum}
+# 3. Verificar que la descarga es segura (Checksum)
+sha256sum --check hubble-linux-${HUBBLE_ARCH}.tar.gz.sha256sum
+# 4. Descomprimir e instalar en /usr/local/bin
+sudo tar xzvfC hubble-linux-${HUBBLE_ARCH}.tar.gz /usr/local/bin
+# 5. Limpiar archivos temporales
+rm hubble-linux-${HUBBLE_ARCH}.tar.gz{,.sha256sum}
+```
+
+#### Paso B: Activar el Backend (Relay)
+
+Este comando despliega **Hubble Relay** y configura los certificados TLS necesarios para que funcione de forma segura.
+
+```bash
+cilium hubble enable
+```
+```bash
+cilium status
+
+    /¯¯\
+ /¯¯\__/¯¯\    Cilium:             OK
+ \__/¯¯\__/    Operator:           OK
+ /¯¯\__/¯¯\    Envoy DaemonSet:    OK
+ \__/¯¯\__/    Hubble Relay:       OK
+    \__/       ClusterMesh:        disabled
+
+DaemonSet              cilium                   Desired: 6, Ready: 6/6, Available: 6/6
+DaemonSet              cilium-envoy             Desired: 6, Ready: 6/6, Available: 6/6
+Deployment             cilium-operator          Desired: 1, Ready: 1/1, Available: 1/1
+Deployment             hubble-relay             Desired: 1, Ready: 1/1, Available: 1/1
+Deployment             hubble-ui                Desired: 1, Ready: 1/1, Available: 1/1
+Containers:            cilium                   Running: 6
+                       cilium-envoy             Running: 6
+                       cilium-operator          Running: 1
+                       clustermesh-apiserver    
+                       hubble-relay             Running: 1
+                       hubble-ui                Running: 1
+Cluster Pods:          53/53 managed by Cilium
+Helm chart version:    1.18.5
+Image versions         cilium             quay.io/cilium/cilium:v1.18.5@sha256:2c92f...
+                       cilium-envoy       quay.io/cilium/cilium-envoy:v1.34.12-17653...
+                       cilium-operator    quay.io/cilium/operator-generic:v1.18.5@sh...
+                       hubble-relay       quay.io/cilium/hubble-relay:v1.18.5@sha256...
+                       hubble-ui          quay.io/cilium/hubble-ui-backend:v0.13.3@s...
+                       hubble-ui          quay.io/cilium/hubble-ui:v0.13.3@sha256:66...
+```
+
+* **¿Qué hace?** Habilita la exportación de eventos de red desde los nodos hacia un servicio centralizado (Relay).
+
+#### Paso C: Activar la Interfaz Gráfica (UI)
+
+Si quieres ver el mapa visual (muy recomendado), activa el dashboard web:
+
+```bash
+cilium hubble enable --ui
+```
+
+* **Resultado:** Desplegará un pod `hubble-ui` en el namespace `kube-system`.
+
+  ```bash
+  kubectl get pods -n kube-system | grep hubble
+  
+  hubble-relay-54774bdddb-zv2lw                           1/1     Running     0               7m
+  hubble-ui-576dcd986f-7c5bm                              2/2     Running     0               4m
+  ```
+
+### Acceso y Uso
+
+Una vez desplegado, tienes dos formas de ver los datos: vía web (UI) o vía terminal (CLI).
+
+#### Ver el Mapa Visual (Recomendado)
+
+Este comando crea un túnel seguro desde tu máquina local hacia el clúster para abrir la web.
+
+```bash
+cilium hubble ui --port-forward 12000
+```
+
+ * **Acción:** Abrirá automáticamente tu navegador en `http://localhost:12000`.
+ * **Lo que verás:** Un mapa interactivo donde puedes seleccionar un Namespace y ver las líneas de comunicación entre tus microservicios. Las líneas **rojas** indican tráfico bloqueado.
+
+
+### Troubleshooting Rápido
+
+Si la UI no carga o no ves datos:
+
+ * **Estado de los Pods:** Verifica que todo esté en verde.
+   ```bash
+   kubectl get pods -n kube-system -l k8s-app=hubble-ui
+   kubectl get pods -n kube-system -l k8s-app=hubble-relay
+   ```
+ 
+ * **Firewall:** Si usas UFW (como configuramos antes), asegúrate de que el **Hubble Relay** pueda hablar con los nodos. El puerto de Hubble suele ser el **4244 (Server)** y **4245 (Relay)** TCP.
+> [\!TIP]
+> *Si seguiste la guía de UFW anterior, estos puertos ya deberían estar permitidos internamente.*
 
 
 
@@ -516,15 +611,3 @@ En los logs de Tetragon verás el evento con el emoji 💥 y la acción `SIGKILL
 ## Cilium Network Policy
 
 ## RBAC
-
-HUBBLE_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/hubble/master/stable.txt)
-HUBBLE_ARCH=amd64
-if [ "$(uname -m)" = "aarch64" ]; then HUBBLE_ARCH=arm64; fi
-curl -L --fail --remote-name-all https://github.com/cilium/hubble/releases/download/$HUBBLE_VERSION/hubble-linux-${HUBBLE_ARCH}.tar.gz{,.sha256sum}
-sha256sum --check hubble-linux-${HUBBLE_ARCH}.tar.gz.sha256sum
-sudo tar xzvfC hubble-linux-${HUBBLE_ARCH}.tar.gz /usr/local/bin
-rm hubble-linux-${HUBBLE_ARCH}.tar.gz{,.sha256sum}
-
-cilium hubble enable
-cilium hubble enable --ui
-cilium hubble ui --port-forward 12000
