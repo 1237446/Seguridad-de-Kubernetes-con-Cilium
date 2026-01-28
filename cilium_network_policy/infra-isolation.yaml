@@ -1,0 +1,27 @@
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: 01-infra-isolation
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: io.kubernetes.pod.namespace
+        operator: In
+        values: ["rook-ceph", "cnpg-system", "cert-manager", "metallb-system"]
+  
+  # INGRESS: ¿Quién puede entrar a la bóveda?
+  ingress:
+    # 1. Tráfico interno: Los componentes dentro del MISMO namespace pueden hablarse
+    # (ej. Rook OSD hablando con Rook Mon)
+    - fromEndpoints:
+        - matchExpressions:
+            - key: io.kubernetes.pod.namespace
+              operator: In
+              values: ["rook-ceph", "cnpg-system", "cert-manager", "metallb-system"]
+    
+    # 2. Prometheus (Si tuvieras un namespace de monitoreo, lo añades aquí)
+    # - fromEndpoints: 
+    #   - matchLabels: { app: prometheus }
+
+    # NOTA: No estamos permitiendo tráfico desde "default" ni "bacula" aquí.
+    # Eso previene el ataque lateral.
