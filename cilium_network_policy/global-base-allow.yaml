@@ -1,0 +1,32 @@
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: 00-global-base-allow
+spec:
+  # Esta política aplica a TODOS los pods del clúster (excepto hostNetwork)
+  endpointSelector: {}
+  
+  # EGRESS: Lo que todo pod necesita para vivir
+  egress:
+    # 1. DNS: Permitir resolver nombres (UDP/TCP 53) en kube-system
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    
+    # 2. Kubernetes API: Necesario para que los pods hablen con el "jefe"
+    - toEntities:
+        - kube-apiserver
+
+  # INGRESS: Permitir que Kubernetes monitoree la salud de los pods
+  ingress:
+    - fromEntities:
+        - host
+        - remote-node
+        - kube-apiserver
