@@ -1,0 +1,39 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "enforce-immutable-system"
+spec:
+  kprobes:
+  - call: "security_file_permission"
+    syscall: false
+    return: true
+    args:
+    - index: 0
+      type: "file" 
+    - index: 1
+      type: "int"
+    returnArg:
+      index: 0
+      type: "int"
+    returnArgAction: "Post"
+    selectors:
+    # ---------------------------------------------------------
+    # BLOQUEO DE MODIFICACIONES DEL SISTEMA (Anti-Tampering)
+    # Mata cualquier proceso que intente escribir en carpetas de sistema.
+    # ---------------------------------------------------------
+    - matchArgs:      
+      - index: 0
+        operator: "Prefix"
+        values:
+        - "/bin"
+        - "/usr/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/boot"
+        - "/lib"
+      - index: 1
+        operator: "Equal"
+        values:
+        - "2" # 2 = MAY_WRITE
+      matchActions:
+      - action: Sigkill # <--- AHORA BLOQUEA (Mata el proceso)
