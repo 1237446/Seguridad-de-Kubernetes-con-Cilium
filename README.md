@@ -332,16 +332,22 @@ Esta política es vital para evitar la técnica de "Living off the Land" (usar h
   metadata:
     name: "block-net-tools-exec"
   spec:
-    # Excepción: No aplicar a Rook-Ceph ni a pods marcados con allow-net-tools=true
+    # Excepciones: Permitir que Rook-Ceph y otros pods autorizados funcionen
     podSelector:
       matchExpressions:
       - key: allow-net-tools
         operator: NotIn
-        values: ["true"]
+        values:
+        - "true"
       - key: app
         operator: NotIn
-        values: ["rook-ceph-rgw", "rook-ceph-mgr", "rook-ceph-mon", "rook-ceph-osd"]
+        values:
+        - "rook-ceph-rgw"
+        - "rook-ceph-mgr"
+        - "rook-ceph-mon"
+        - "rook-ceph-osd"
   
+    # Reglas
     kprobes:
     - call: "sys_execve"
       syscall: true
@@ -353,18 +359,30 @@ Esta política es vital para evitar la técnica de "Living off the Land" (usar h
         - index: 0
           operator: "Equal"
           values:
-          # Herramientas de Transferencia
-          - "/usr/bin/curl"
-          - "/bin/curl"
-          - "/usr/bin/wget"
-          - "/usr/bin/nc"
-          # Gestores de Paquetes
-          - "/usr/bin/apt"
-          - "/sbin/apk"
-          - "/usr/bin/pip"
-          - "/usr/bin/npm"
+          # --- Herramientas de Transferencia ---
+          - "/usr/bin/curl"     # bajar archivos
+          - "/bin/curl"         # bajar archivos
+          - "/usr/bin/wget"     # bajar archivos
+          - "/bin/wget"         # bajar archivos
+          - "/usr/bin/nc"       # red
+          - "/bin/nc"           # red
+          - "/usr/bin/ncat"     # red
+          
+          # --- Gestores de Paquetes (Debian/Ubuntu/Alpine/RHEL) ---
+          - "/usr/bin/apt"      # Gestor de paquetes Debian/Ubuntu
+          - "/bin/apt"          # Gestor de paquetes Debian/Ubuntu
+          - "/usr/bin/apt-get"  # Gestor de paquetes Debian/Ubuntu
+          - "/bin/apt-get"      # Gestor de paquetes Debian/Ubuntu
+          - "/usr/bin/dpkg"     # El motor detrás de apt
+          - "/bin/dpkg"         # El motor detrás de apt
+          - "/sbin/apk"         # Gestor de paquetes Alpine
+          - "/bin/apk"          # Gestor de paquetes Alpine
+          - "/usr/bin/yum"      # Gestor de paquetes RHEL/CentOS
+          - "/usr/bin/dnf"      # Gestor de paquetes Fedora/RHEL modernos
+          - "/usr/bin/pip"      # Python Package Installer (riesgo alto)
+          - "/usr/bin/npm"      # Node Package Manager (riesgo alto)
         matchActions:
-        - action: Sigkill # Mata el proceso
+        - action: Sigkill
   ```
 
 #### Inmutabilidad del Sistema (Anti-Tampering)
@@ -381,6 +399,8 @@ Si un atacante logra entrar, intentará instalar rootkits o modificar binarios d
   metadata:
     name: "enforce-immutable-system"
   spec:
+  
+    # Reglas
     kprobes:
     - call: "security_file_permission"
       syscall: false
@@ -395,15 +415,26 @@ Si un atacante logra entrar, intentará instalar rootkits o modificar binarios d
         type: "int"
       returnArgAction: "Post"
       selectors:
+      # ---------------------------------------------------------
+      # BLOQUEO DE MODIFICACIONES DEL SISTEMA (Anti-Tampering)
+      # Mata cualquier proceso que intente escribir en carpetas de sistema.
+      # ---------------------------------------------------------
       - matchArgs:      
         - index: 0
           operator: "Prefix"
-          values: ["/bin", "/usr/bin", "/sbin", "/boot", "/lib"]
+          values:
+          - "/bin"
+          - "/usr/bin"
+          - "/usr/sbin"
+          - "/sbin"
+          - "/boot"
+          - "/lib"
         - index: 1
           operator: "Equal"
-          values: ["2"] # 2 significa Permiso de Escritura
+          values:
+          - "2" # 2 = MAY_WRITE
         matchActions:
-        - action: Sigkill
+        - action: Sigkill # <--- AHORA BLOQUEA (Mata el proceso)
   ```
 
 #### Protección de Credenciales (/etc/shadow)
@@ -421,6 +452,8 @@ El archivo `/etc/shadow` contiene los hashes de las contraseñas. Nadie debería
   metadata:
     name: "secure-shadow-ssh-safe"
   spec:
+  
+    # Reglas
     kprobes:
     - call: "security_file_permission"
       syscall: false
@@ -438,18 +471,29 @@ El archivo `/etc/shadow` contiene los hashes de las contraseñas. Nadie debería
       - matchArgs:      
         - index: 0
           operator: "Equal"
-          values: ["/etc/shadow"]
+          values:
+          - "/etc/shadow"
         - index: 1
           operator: "Equal"
-          values: ["4"] # Lectura
+          values:
+          - "4" # MAY_READ
         
-        # Solo estos binarios pueden leer el archivo:
+        # =======================================================
+        # LISTA BLANCA (Binarios Autorizados)
+        # =======================================================
         matchBinaries:
         - operator: "NotIn"
           values:
-          - "/usr/bin/sudo"
-          - "/usr/sbin/sshd"
+          # Administración del Sistema (SSH/Sudo)
+          - "/usr/bin/sudo"       # Permitir sudo
+          - "/usr/sbin/sshd"      # Permitir Servidor SSH <--- ESTO FALTABA
+          - "/usr/bin/ssh"        # Cliente SSH (a veces necesario)
+          - "/usr/bin/login"      # Login de consola local
+          - "/usr/bin/passwd"     # Cambio de contraseña
         
+        # =======================================================
+        # ACCIÓN: MATAR AL RESTO
+        # =======================================================
         matchActions:
         - action: Sigkill
   ```
