@@ -264,7 +264,10 @@ Tetragon se instala generalmente como un DaemonSet (un agente en cada nodo). Usa
 Este comando instala los agentes de Tetragon en el espacio de nombres `kube-system`.
 
 ```bash
-helm install tetragon cilium/tetragon -n kube-system
+helm repo add cilium https://helm.cilium.io
+helm repo update
+helm install tetragon cilium/tetragon \
+  -n kube-system -f tetragon.yaml --version 1.5.0
 ```
 
 Al ejecutar ese comando:
