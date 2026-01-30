@@ -1,0 +1,57 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: api-server-secure-access
+spec:
+  endpointSelector:
+    matchLabels:
+      # Selecciona los pods del API Server en RKE2
+      "k8s:io.kubernetes.pod.namespace": kube-system
+      component: kube-apiserver
+  ingress:
+    # 1. Permitir comunicación desde los Nodos (Kubelets y procesos del Host)
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # 2. Permitir que los Pods de Infraestructura hablen con el API
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # 3. Permitir acceso administrativo desde tu red/IP (Opcional pero recomendado)
+    - fromEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # 4. Permitir acceso desde el Gateway API
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": gateway-api
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+  egress:
+    # El API Server debe poder hablar con etcd (puerto 2379)
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            component: etcd
+      toPorts:
+        - ports:
+            - port: "2379"
+              protocol: TCP
+    # 1. Comunicación con el API Server
+    # - toEntities:
+    #     - kube-apiserver
+    - toEntities:
+        - world
