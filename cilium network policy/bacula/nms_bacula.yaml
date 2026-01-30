@@ -1,0 +1,105 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: bacula
+spec:
+  endpointSelector: {} # Selecciona todos los pods del namespace
+  ingress:
+    - {} # No permite ninguna entrada
+  egress:
+    - {} # No permite ninguna salida
+
+---
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: bacula-namespace-encapsulated
+  namespace: bacula
+spec:
+  endpointSelector: {} # Aplica a todos los pods del namespace 'bacula'
+  
+  # =========================================================
+  # 1. ENTRADA (INGRESS)
+  # =========================================================
+  ingress:
+    # A. Acceso desde el exterior (Gateway Cilium para Bacularis)
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": gateway-api
+      toPorts:
+        - ports:
+            - port: "9097"
+              protocol: TCP
+
+    # B. Acceso desde el mundo (Admin Console y SD Backup)
+    - fromEntities:
+        - world
+        - cluster
+      toPorts:
+        - ports:
+            - port: "9101" # Bacula Director
+            - port: "9103" # Bacula Storage Daemon
+            - port: "9097" # Interfaz Web SD/NFS
+              protocol: TCP
+
+    # C. CONEXIÓN DEL OPERADOR CNPG (CRÍTICO)
+    # Permite que el operador gestione la base de datos desde su namespace
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": cnpg-system
+      toPorts:
+        - ports:
+            - port: "5432" # Puerto de PostgreSQL
+            - port: "8000" # Puerto de gestión/métricas del operador
+              protocol: TCP
+
+    # D. Comunicación Interna del Namespace
+    # Permite que Web, Director, SD y DB hablen entre sí sin restricciones internas
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": bacula
+
+  # =========================================================
+  # 2. SALIDA (EGRESS)
+  # =========================================================
+  egress:
+    # A. DNS (Requerido para todo el clúster)
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            "k8s:k8s-app": kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+
+    # B. Kubernetes API (Para Operadores y drivers CSI)
+    - toEntities:
+        - kube-apiserver
+
+    # C. Salida al Mundo (Clientes FDs y MinIO/S3 Externo)
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "9102" # Conexión a Clientes Externos (FD)
+            - port: "9000" # Conexión a MinIO Externo
+            - port: "9103" # Control de SD desde el Director
+            - port: "30764" 
+              protocol: TCP
+
+    - toEndpoints:
+      - matchLabels:
+          cnpg.io/cluster: postgresql-node
+      toPorts:
+      - ports:
+        - port: "5432"
+          protocol: TCP
+        - port: "8000"
+          protocol: TCP
+
+    # D. Comunicación Interna del Namespace
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": bacula
