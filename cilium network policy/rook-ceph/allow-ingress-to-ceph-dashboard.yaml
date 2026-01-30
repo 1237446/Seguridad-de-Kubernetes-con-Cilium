@@ -1,0 +1,22 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-ingress-to-ceph-dashboard
+  namespace: rook-ceph
+spec:
+  endpointSelector:
+    matchLabels:
+      app: rook-ceph-mgr # El dashboard corre en los pods MGR
+      mgr_role: active
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        # Ajusta estos labels según tu Ingress (ej. Traefik, Nginx o Cilium Ingress)
+        "k8s:io.kubernetes.pod.namespace": gateway-api 
+    toPorts:
+    - ports:
+      - port: "8443"
+        protocol: TCP
+  - fromEntities:
+    - host
+    - remote-node

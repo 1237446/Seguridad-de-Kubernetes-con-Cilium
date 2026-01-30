@@ -1,0 +1,25 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: rook-ceph-internal
+  namespace: rook-ceph
+spec:
+  endpointSelector: {}
+  ingress:
+    # 1. Permitir comunicación interna entre pods de rook-ceph
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": rook-ceph
+    # 2. Permitir que los nodos (CSI) entren a gestionar volúmenes
+    - fromEntities:
+        - host
+        - remote-node
+  egress:
+    # 1. Permitir salida a otros pods del mismo namespace
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": rook-ceph
+    # 2. Permitir salida hacia los nodos (CSI/Network networking)
+    - toEntities:
+        - host
+        - remote-node

@@ -1,0 +1,51 @@
+# apiVersion: "cilium.io/v2"
+# kind: CiliumNetworkPolicy
+# metadata:
+#   name: allow-client-access-to-ceph
+#   namespace: rook-ceph
+# spec:
+#   endpointSelector:
+#     matchLabels:
+#       app: rook-ceph-osd # O rook-ceph-mon
+#   ingress:
+#     - fromEndpoints:
+#         - matchLabels:
+#             # Opción A: Permitir a namespaces específicos (más seguro)
+#             "k8s:io.kubernetes.pod.namespace": "default"
+#             # Opción B: Podrías usar un label global si confías en todos tus apps
+#       toPorts:
+#         - ports:
+#             - port: "3300"
+#               protocol: TCP
+#             - port: "6789"
+#               protocol: TCP
+#             - port: "6800-7300"
+#               protocol: TCP
+
+
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-all-namespaces-to-ceph
+  namespace: rook-ceph
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - rook-ceph-osd
+          - rook-ceph-mon
+          - rook-ceph-mgr
+          - rook-ceph-mds
+  ingress:
+    - fromEndpoints:
+        - {} # Esto permite el acceso desde cualquier pod en cualquier namespace
+      toPorts:
+        - ports:
+            - port: "3300"
+              protocol: TCP
+            - port: "6789"
+              protocol: TCP
+            - port: "6800-7300"
+              protocol: TCP
