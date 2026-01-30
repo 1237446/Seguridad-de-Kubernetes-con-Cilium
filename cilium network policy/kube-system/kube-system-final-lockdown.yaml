@@ -1,0 +1,20 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: kube-system-controllers-lockdown
+  namespace: kube-system
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: component
+        operator: In
+        values:
+          - kube-controller-manager
+          - kube-scheduler
+          - cloud-controller-manager
+  ingress:
+    - fromEntities:
+        - kube-apiserver
+  egress:
+    - toEntities:
+        - kube-apiserver

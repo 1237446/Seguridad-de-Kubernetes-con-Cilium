@@ -1,0 +1,40 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: etcd-lockdown
+  namespace: kube-system
+spec:
+  endpointSelector:
+    matchLabels:
+      component: etcd
+  ingress:
+    # 1. Permitir que el API Server consulte datos (Puerto Cliente)
+    - fromEndpoints:
+        - matchLabels:
+            component: kube-apiserver
+      toPorts:
+        - ports:
+            - port: "2379"
+              protocol: TCP
+    # 2. Permitir sincronización entre los nodos de etcd (Puerto Peer)
+    - fromEndpoints:
+        - matchLabels:
+            component: etcd
+      toPorts:
+        - ports:
+            - port: "2380"
+              protocol: TCP
+    # 3. Permitir Health Checks desde los Nodos (Kubelet)
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "2379"
+              protocol: TCP
+  egress:
+    # etcd solo debe responder; no suele iniciar conexiones externas
+    # Permitimos salida hacia sus pares para la replicación
+    - toEndpoints:
+        - matchLabels:
+            component: etcd

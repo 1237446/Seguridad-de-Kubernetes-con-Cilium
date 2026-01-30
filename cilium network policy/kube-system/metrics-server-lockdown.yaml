@@ -1,0 +1,25 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: metrics-server-lockdown
+  namespace: kube-system
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s-app: metrics-server
+  ingress:
+    # Solo el API Server y el sistema de monitoreo pueden pedirle datos
+    - fromEntities:
+        - kube-apiserver
+  egress:
+    # 1. Comunicación con el API Server
+    - toEntities:
+        - kube-apiserver
+    # 2. Comunicación con los Nodos para obtener métricas (Puerto Kubelet)
+    - toEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "10250"
+              protocol: TCP

@@ -1,0 +1,26 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: tetragon-lockdown
+  namespace: kube-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: tetragon
+  ingress:
+    # 1. Permitir que el operador de Tetragon consulte a los agentes
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: tetragon-operator
+      toPorts:
+        - ports:
+            - port: "5444" # Puerto de gRPC para eventos
+              protocol: TCP
+  egress:
+    # 1. Comunicación con el API Server para reportar CRDs
+    - toEntities:
+        - kube-apiserver
+    # 2. Comunicación con el operador de Tetragon
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: tetragon-operator
