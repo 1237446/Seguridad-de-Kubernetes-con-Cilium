@@ -1,0 +1,24 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-ceph-dashboard-external
+  namespace: rook-ceph
+spec:
+  # 1. Seleccionamos SOLO los pods del dashboard
+  endpointSelector:
+    matchLabels:
+      app: rook-ceph-mgr
+      mgr_role: active
+      # A veces la etiqueta varía según la versión, verifica con:
+      # kubectl get pods -n rook-ceph -l app=rook-ceph-mgr --show-labels
+
+  # 2. Permitimos entrada desde el mundo y los nodos
+  ingress:
+  - fromEntities:
+    - world       # Tráfico externo (Internet/LAN)
+    - host        # Tráfico desde el propio nodo
+    - remote-node # Tráfico si entra por otro nodo del cluster
+    toPorts:
+    - ports:
+      - port: "8443"  # IMPORTANTE: El puerto interno del POD (ver nota abajo)
+        protocol: TCP
