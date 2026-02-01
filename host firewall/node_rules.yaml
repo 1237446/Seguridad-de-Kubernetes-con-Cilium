@@ -1,0 +1,71 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: "hfs-nodes-security"
+spec:
+  description: "Traslado de reglas UFW a Cilium Host Firewall"
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/os: linux # Aplica a todos los nodos Linux
+  ingress:
+    # 1. K8s API e Infraestructura (Puertos 6443, 9345, 10250)
+    - fromEntities:
+        - cluster
+        - host
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+            - port: "9345"
+              protocol: TCP
+            - port: "10250"
+              protocol: TCP
+    
+    # 2. Acceso Administrativo (Equivalente a ADMIN_IP)
+    - fromCIDRSet:
+        - cidr: "172.16.8.208/32"
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+            - port: "22"
+              protocol: TCP
+
+    # 3. Cilium Internal (VXLAN, Health, WireGuard, Hubble)
+    - fromEntities:
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "8472" # VXLAN
+              protocol: UDP
+            - port: "4240" # Health
+              protocol: TCP
+            - port: "51871" # WireGuard
+              protocol: UDP
+            - port: "4244" # Hubble
+              protocol: TCP
+
+    # 4. Servicios y NodePorts (30000-32767)
+    - fromEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "30000"
+              endPort: "32767"
+              protocol: TCP
+
+    # 5. Bacula y Otros Servicios específicos
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: "9101"
+              endPort: "9103"
+              protocol: TCP
+            - port: "9097"
+              protocol: TCP
+  egress:
+    - toEntities:
+        - cluster
+        - world
+        - host
