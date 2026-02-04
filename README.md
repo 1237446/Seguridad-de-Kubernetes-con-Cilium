@@ -204,10 +204,12 @@ helm upgrade cilium cilium/cilium \
     --reuse-values \
     --set encryption.enabled=true \
     --set encryption.type=wireguard
+    --set mtu=1375
 ```
 
 * `--reuse-values`: Vital para no borrar configuraciones previas (como tu IPAM o configuración de L7).
 * `encryption.type=wireguard`: Especifica que usaremos el protocolo moderno WireGuard en lugar de IPsec.
+* `mtu=1375`: Ajusta el tamaño máximo de paquete. Esto evita que los paquetes cifrados superen el límite de la red física, lo que causaría caídas de rendimiento o pérdida de conexión.
 
 #### Paso B: Aplicar los Cambios (Rollout)
 
@@ -215,6 +217,11 @@ Helm actualiza el ConfigMap, pero los agentes de Cilium que ya están corriendo 
 
 ```bash
 kubectl rollout restart ds/cilium -n kube-system
+```
+
+Verificación del MTU
+```bash
+kubectl exec -n kube-system ds/cilium -- cilium config | grep mtu
 ```
 
 > [\!NOTE]
