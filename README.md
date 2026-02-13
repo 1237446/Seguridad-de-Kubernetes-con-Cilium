@@ -947,7 +947,3 @@ kubectl get clusterrolebindings
 1. **Evita `cluster-admin`:** No des permisos de administrador global a menos que sea estrictamente necesario.
 2. **Usa Namespaces:** Limita a los usuarios a sus áreas de trabajo (ej. `django-dev`, `backup-ops`).
 3. **Audita con Hubble:** Como ya tienes **Hubble**, puedes ver qué identidades están intentando realizar llamadas a la API que son rechazadas por falta de permisos.
-
----
-
-**¿Te gustaría que te ayude a crear un ServiceAccount específico para que tus agentes de Bacula puedan interactuar con la API de Kubernetes de forma segura?**
