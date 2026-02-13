@@ -1,185 +1,185 @@
 # Seguridad-de-Kubernetes-con-Cilium
-Esta guía detalla cómo asegurar los nodos de un clúster Kubernetes utilizando **UFW** (seguridad a nivel de host) en conjunto con **Cilium** (seguridad y red a nivel de Pod, con encriptación WireGuard).
 
-Es vital distinguir las capas de seguridad para evitar cortes de servicio:
+Esta arquitectura implementa un modelo de **Defensa en Profundidad** utilizando el stack nativo de Cilium. Es fundamental entender que la seguridad no es una única barrera, sino una combinación de capas:
 
-* **UFW (Host Firewall):** Protege el Sistema Operativo (Ubuntu/Debian). Su función es bloquear acceso SSH no autorizado y limitar qué puertos del nodo son visibles hacia internet o la red corporativa.
-* **Cilium (CNI):** Gestiona la red interna de los contenedores. UFW **no** debe interferir con la comunicación interna de los Pods ni con las interfaces virtuales que Cilium crea (`cilium_host`, `cilium_vxlan`, `cilium_wg0`).
+* **Host Firewall (eBPF):** Evolución de UFW que protege el nodo a nivel de kernel, filtrando el acceso externo (SSH, API) con mayor rendimiento.
+* **Encriptación con WireGuard:** Crea túneles seguros y automáticos entre todos los nodos del clúster. Toda la comunicación entre Pods viaja cifrada por defecto, protegiendo los datos contra intercepción en la red física.
+* **Tetragon (Runtime Security):** Monitorea la ejecución de procesos y el acceso a archivos en tiempo real. Detecta comportamientos anómalos dentro de los contenedores (ej. intentos de escalada de privilegios o ejecución de binarios sospechosos).
+* **Políticas de Cilium (L3-L7):** Reglas de red inteligentes basadas en **Identidad** (labels) y no en IPs. Permite filtrar tráfico incluso a nivel de aplicación (HTTP/API).
+* **Hubble (Observabilidad):** Proporciona visibilidad total del flujo de datos, permitiendo auditar y diagnosticar qué políticas están permitiendo o bloqueando el tráfico en tiempo real.
 
 ---
 
-## UFW (Cortafuegos No Complicado)
-UFW es una interfaz de gestión simplificada para el sistema de filtrado de paquetes de Linux (netfilter/iptables).
+## Cilium Host Firewall (Seguridad a nivel de Nodo)
 
-En Kubernetes, la gestión de redes es compleja porque K8s manipula dinámicamente las reglas de iptables para que los servicios y pods se comuniquen. Pero La utilidad principal de UFW en K8s no es gestionar la red de los contenedores, sino proteger al Nodo (el servidor host).
+Cilium Host Firewall permite gestionar la seguridad de los nodos (hosts) utilizando **CiliumClusterwideNetworkPolicies (CCNP)**. A diferencia de UFW, Host Firewall no depende de iptables y permite usar selectores de etiquetas, entidades (como `remote-node` o `world`) y visibilidad avanzada.
 
-  * Seguridad del Host: Protege el sistema operativo base de accesos SSH no autorizados o escaneos de puertos externos.
-  
-  * Segmentación: Asegura que solo los puertos necesarios para el funcionamiento del clúster (API Server, Kubelet, Etcd) estén expuestos a las redes correctas.
+> [!WARNING]
+> **Host Firewall no está activo por defecto.** Si aplicas la política sin activar la función en el agente de Cilium, las reglas no se aplicarán.
 
-### Pre-requisitos Críticos (Configuración del Sistema)
+#### Habilitar Host Firewall
 
-> [\!WARNING]
->  No saltes este paso. Si activas UFW sin habilitar el reenvío de paquetes, los Pods no podrán resolver DNS ni comunicarse entre sí.
-
-#### A. Habilitar IP Forwarding
-
-Kubernetes requiere que el tráfico pueda pasar a través del nodo hacia los contenedores.
-
-Edita la configuración predeterminada de UFW:
-```bash
-sudo nano /etc/default/ufw
-```
-
-Busca y modifica la política de reenvío:
-```bash
-# Cambiar DROP por ACCEPT
-DEFAULT_FORWARD_POLICY="ACCEPT"
-```
-
-Aplica los cambios (sin activar el firewall todavía):
-```bash
-sudo ufw reload
-```
-
-#### B. Definir Variables (Para facilitar el copiado)
-
-Antes de ejecutar las reglas, define estas variables en tu terminal según tu entorno:
-```bash
-# Rango de IPs de tus Nodos (Ej. 192.168.1.0/24)
-export K8S_NODES_CIDR="192.168.1.0/24"
-# Tu IP de administración (para SSH y API seguro)
-export ADMIN_IP="203.0.113.5"
-# CIDR de los Pods (Por defecto en Cilium suele ser 10.0.0.0/8 o similar)
-export POD_CIDR="10.42.0.0/16"
-# CIDR de los Servicios
-export SVC_CIDR="10.43.0.0/16"
-```
-
-### Implementación de Reglas
-
-#### Fase 1: Acceso Administrativo y Base
-
-Primero, asegúrate de no quedarte fuera del servidor.
+Debes asegurarte de que Cilium tenga activada la opción `hostFirewall`. Puedes activarlo mediante Helm:
 
 ```bash
-# 1. Resetear reglas previas para empezar limpio
-sudo ufw reset
-
-# 2. Denegar todo el tráfico entrante por defecto
-sudo ufw default deny incoming
-
-# 3. Permitir todo el tráfico saliente
-sudo ufw default allow outgoing
-
-# 4. Permitir SSH (Idealmente solo desde tu IP, o 'limit' para evitar fuerza bruta)
-sudo ufw allow from $ADMIN_IP to any port 22 proto tcp
-# O si necesitas acceso general: sudo ufw limit 22/tcp
-
-# 5. Permitir acceso a la API de Kubernetes (Solo Admin y Nodos)
-sudo ufw allow from $ADMIN_IP to any port 6443 proto tcp
-sudo ufw allow from $K8S_NODES_CIDR to any port 6443 proto tcp
+helm upgrade cilium cilium/cilium --namespace kube-system \
+  --reuse-values \
+  --set hostFirewall.enabled=true
 ```
 
-#### Fase 2: Comunicación entre Nodos (Kubernetes Core)
+#### Diferencia Clave: Entidades vs IPs
 
-Los nodos deben hablar entre sí sin restricciones para Etcd, Kubelet y métricas.
+En UFW usabas variables como `$K8S_NODES_CIDR`. En Cilium usamos **Entidades**:
+
+* **`host`**: El nodo local.
+* **`remote-node`**: Cualquier otro nodo del clúster.
+* **`cluster`**: Todos los Pods del clúster.
+* **`world`**: Cualquier tráfico fuera del clúster.
+
+### Implementación de la Política: `hfs-nodes-security`
+
+Esta política centraliza todas las reglas de tu antigua guía de UFW, incluyendo las necesidades específicas de **RKE2**, **Ceph (Rook)** y **Bacula**.
+
+#### Estructura y Acceso Administrativo
+
+La política comienza seleccionando todos los nodos Linux y definiendo quién puede entrar vía SSH o API.
+
+```yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: "hfs-nodes-security"
+spec:
+  description: "Traslado de reglas UFW a Cilium Host Firewall"
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/os: linux # Aplica a todos los nodos Linux
+  ingress:
+    # --- ACCESO ADMINISTRATIVO ---
+    - fromCIDRSet:
+        - cidr: "172.16.8.208/32" # Tu IP de Admin específica
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+            - port: "22"
+              protocol: TCP
+
+```
+
+#### Infraestructura Kubernetes y Comunicación Interna
+
+Reemplaza las reglas de VXLAN y WireGuard de UFW. Cilium identifica automáticamente a los otros nodos como `remote-node`.
+
+```yaml
+    # --- K8S API E INFRAESTRUCTURA (RKE2) ---
+    - fromEntities:
+        - cluster
+        - host
+      toPorts:
+        - ports:
+            - port: "6443" # API Server
+              protocol: TCP
+            - port: "9345" # RKE2 Supervisor
+              protocol: TCP
+            - port: "10250" # Kubelet
+              protocol: TCP
+
+    # --- CILIUM INTERNAL & ENCRIPTACIÓN ---
+    - fromEntities:
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "8472"  # VXLAN
+              protocol: UDP
+            - port: "4240"  # Health Checks
+              protocol: TCP
+            - port: "51871" # WireGuard
+              protocol: UDP
+            - port: "4244"  # Hubble Relay
+              protocol: TCP
+
+```
+
+#### Tráfico de Almacenamiento (Ceph / Rook)
+
+Dado que usas **Rook-Ceph** para la UNI, los nodos necesitan comunicarse intensamente para replicar datos. Esta sección reemplaza las aperturas manuales de puertos en UFW.
+
+```yaml
+    # --- CEPH INTERNAL STORAGE ---
+    - fromEntities:
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "6789" # Monitor
+              protocol: TCP
+            - port: "3300" # Messenger v2
+              protocol: TCP
+            - port: "6800" # OSDs Rango
+              endPort: 7300
+              protocol: TCP
+
+```
+
+#### Servicios Externos y Bacula
+
+Aquí gestionamos cómo el mundo exterior ve tus servicios y cómo Bacula se comunica para los backups.
+
+```yaml
+    # --- NODEPORT Y SERVICIOS EXTERNOS ---
+    - fromEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "30000"
+              endPort: 32767
+              protocol: TCP
+
+    # --- BACULA Y TELEMETRÍA ---
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: "9101" # Bacula Director
+              endPort: 9103 # FD y SD
+              protocol: TCP
+            - port: "9097" # Bacularis / API
+              protocol: TCP
+
+```
+
+#### Reglas de Salida (Egress)
+
+A diferencia de UFW donde poníamos `default allow outgoing`, en Cilium Host Firewall es mejor ser explícito, aunque aquí permitimos la salida general para evitar romper actualizaciones de sistema o consultas DNS.
+
+```yaml
+  egress:
+    - toEntities:
+        - cluster
+        - world
+        - host
+        - remote-node
+
+```
+
+Si necesitas ver el estado de las políticas aplicadas en un nodo específico:
 
 ```bash
-# 6. Kubelet API (Salud de nodos y métricas)
-sudo ufw allow from $K8S_NODES_CIDR to any port 10250 proto tcp
+cilium policy wait
+cilium bpf policy list
 
-# 7. Etcd (Solo si es un nodo Control Plane/Master)
-sudo ufw allow from $K8S_NODES_CIDR to any port 2379:2380 proto tcp
-
-# 8. RKE2/K3s Server (Si usas RKE2 en lugar de K8s vainilla, puerto 9345)
-sudo ufw allow from $K8S_NODES_CIDR to any port 9345 proto tcp
-
-# 9. NodePorts (Rango por defecto para servicios tipo NodePort)
-# Nota: Esto abre el rango a CUALQUIER IP. Si usas MetalLB, esto es menos crítico.
-sudo ufw allow 30000:32767/tcp
 ```
 
-#### Fase 3: Reglas Específicas para Cilium + WireGuard
+### Tabla Comparativa: UFW vs Cilium Host Firewall
 
-Cilium necesita puertos específicos para la encapsulación (VXLAN/Geneve) y la encriptación (WireGuard), además de sus interfaces virtuales.
+| Función | UFW (Iptables) | Cilium Host Firewall (eBPF) |
+| --- | --- | --- |
+| **Rendimiento** | Decae con muchas reglas | Constante (O(1) lookup) |
+| **Identidad** | Basada solo en IP | Basada en Entidades y Etiquetas |
+| **Visibilidad** | Logs de kernel (dmesg) | Hubble (Flujos granulares) |
+| **Gestión** | Manual por nodo | Declarativa (YAML) vía kubectl |
 
-```bash
-# 10. Cilium VXLAN (Tráfico de red superpuesta)
-sudo ufw allow from $K8S_NODES_CIDR to any port 8472 proto udp
-
-# 11. Cilium Health Checks
-sudo ufw allow from $K8S_NODES_CIDR to any port 4240 proto tcp
-
-# 12. Cilium WireGuard (Encriptación)
-# El puerto por defecto es 51871 UDP
-sudo ufw allow from $K8S_NODES_CIDR to any port 51871 proto udp
-
-# 13. Confianza en Interfaces Virtuales de Cilium
-# Es CRÍTICO permitir tráfico en las interfaces que crea Cilium
-sudo ufw allow in on cilium_vxlan to any
-sudo ufw allow in on cilium_host to any
-sudo ufw allow in on cilium_wg0 to any
-
-# 14. Permitir tráfico desde los rangos de Pods y Servicios
-sudo ufw allow from $POD_CIDR
-sudo ufw allow from $SVC_CIDR
-```
-
-#### Fase 4: Observabilidad (Hubble) - Opcional
-
-Si usas Hubble para ver el mapa de red, asegura estos puertos (idealmente no exponerlos a internet abierta).
-
-```bash
-# Hubble Relay y Server (Solo desde red interna o Admin)
-sudo ufw allow from $K8S_NODES_CIDR to any port 4244:4245 proto tcp
-# Hubble UI (Si accedes vía port-forward no es necesario abrirlo, si usas NodePort sí)
-# sudo ufw allow from $ADMIN_IP to any port 4246 proto tcp
-```
-
-> [\!TIP]
-> Si desea automatizar la aplicacion de reglas puede usar el script UFW.sh para una aplicacion rapida, sin olvidar editar las variables 
-
-#### Consideración Especial: MetalLB
-
-UFW puede interferir con MetalLB dependiendo del modo:
-
-* **Modo Layer 2 (ARP):** Generalmente funciona bien con las reglas anteriores. El tráfico llega al puerto del servicio y kube-proxy/cilium lo maneja.
-* **Modo BGP:** Si configuras MetalLB con BGP, necesitas permitir el puerto **179 TCP** entre los nodos y tu router.
-  
-  ```bash
-  sudo ufw allow from <IP_ROUTER> to any port 179 proto tcp
-  ```
-
-> [\!IMPORTANT]
-> UFW filtra la entrada al **Nodo**. Si MetalLB asigna una IP externa a un servicio, el tráfico llega a la interfaz física del nodo. Asegúrate de que las reglas de `ufw allow` coincidan con los puertos que tus LoadBalancers están exponiendo si no usas rangos específicos.
-
-#### Activación y Verificación
-
-Una vez aplicadas las reglas, actívalo:
-
-```bash
-sudo ufw enable
-```
-
-Verifica el estado numerado para facilitar la lectura:
-
-```bash
-sudo ufw status numbered
-```
-
-#### Resumen de Puertos (Cheatsheet)
-
-| Puerto | Protocolo | Servicio | Origen Permitido |
-| --- | --- | --- | --- |
-| **22** | TCP | SSH | Admin IP |
-| **6443** | TCP | K8s API | Admin IP / Nodos |
-| **9345** | TCP | RKE2/K3s Join | Nodos |
-| **10250** | TCP | Kubelet | Nodos / Prometheus |
-| **8472** | UDP | Cilium VXLAN | Nodos |
-| **51871** | UDP | WireGuard | Nodos |
-| **4240** | TCP | Cilium Health | Nodos |
-| **Interfaces** | Any | `cilium_*` | **Any** (Interno) |
+---
 
 ## Cilium WireGard
 
@@ -204,12 +204,27 @@ helm upgrade cilium cilium/cilium \
     --reuse-values \
     --set encryption.enabled=true \
     --set encryption.type=wireguard
-    --set mtu=1375
 ```
 
 * `--reuse-values`: Vital para no borrar configuraciones previas (como tu IPAM o configuración de L7).
 * `encryption.type=wireguard`: Especifica que usaremos el protocolo moderno WireGuard en lugar de IPsec.
-* `mtu=1375`: Ajusta el tamaño máximo de paquete. Esto evita que los paquetes cifrados superen el límite de la red física, lo que causaría caídas de rendimiento o pérdida de conexión.
+
+#### Ajuste Manual de MTU en Cilium
+
+Primero, modificamos la configuración global de Cilium almacenada en el clúster:
+
+```bash
+kubectl edit cm -n kube-system cilium-config
+```
+
+Dentro de la sección `data:`, añadimos el valor del MTU (asegurándote de que esté entre comillas para que se trate como una cadena de texto):
+
+```yaml
+data:
+  enable-wireguard: "true"
+  mtu: "1375"  # <--- Esta es la línea que agregamos
+  # ... otras configuraciones existentes
+```
 
 #### Paso B: Aplicar los Cambios (Rollout)
 
@@ -220,13 +235,16 @@ kubectl rollout restart ds/cilium -n kube-system
 ```
 
 Verificación del MTU
+
 ```bash
-kubectl exec -n kube-system ds/cilium -- cilium config | grep mtu
+kubectl exec -n kube-system ds/cilium -- ip link show cilium_host
+
+5: cilium_host@cilium_net: <BROADCAST,MULTICAST,NOARP,UP,LOWER_UP> mtu 1375 qdisc noqueue state UP mode DEFAULT group default qlen 1000
+    link/ether 72:d2:b1:75:c6:c8 brd ff:ff:ff:ff:ff:ff
 ```
 
 > [\!NOTE]
 > Esto reiniciará los agentes de red en cada nodo. Puede haber una micro-interrupción de red de unos segundos mientras se levantan las interfaces de túnel.
-
 
 ### Verificación
 
@@ -242,15 +260,6 @@ Encryption: WireGuard (UserKeys: 0, MaxSeqNum: 0/0)
 ```
 
 Si dice `Disabled`, espera unos segundos más o revisa si los Pods se reiniciaron correctamente.
-
-### Troubleshooting Rápido (Tips Extra)
-
-Si algo falla, verifica estos puntos clave:
-
-1. **El Puerto UDP:** Asegúrate de que el puerto **51871 UDP** (el puerto por defecto de WireGuard en Cilium) esté abierto en el firewall (UFW) entre todos los nodos.
-* *Regla UFW:* `ufw allow 51871/udp`
-2. **Kernel:** WireGuard funciona mejor si el módulo está nativo en el Kernel de Linux (Kernels 5.6+). Si usas una versión muy antigua, Cilium intentará usar una implementación en espacio de usuario (go-wireguard), que es mucho más lenta.
-3. **MTU:** WireGuard añade una cabecera extra a los paquetes. Cilium suele manejar el MTU automáticamente, pero si tienes problemas de conexión, verifica que el MTU de la interfaz `cilium_wg0` sea menor que el de tu interfaz física (`eth0`).
 
 ---
 
@@ -274,7 +283,7 @@ Este comando instala los agentes de Tetragon en el espacio de nombres `kube-syst
 helm repo add cilium https://helm.cilium.io
 helm repo update
 helm install tetragon cilium/tetragon \
-  -n kube-system -f tetragon.yaml --version 1.5.0
+  -n kube-system
 ```
 
 Al ejecutar ese comando:
@@ -667,7 +676,7 @@ Mientras que las *Network Policies* nativas de Kubernetes son como un portero b�
 
 ---
 
-## 2. Estructura Básica
+### Estructura Básica
 
 Un archivo YAML de CNP se divide en tres partes clave:
 
@@ -677,11 +686,11 @@ Un archivo YAML de CNP se divide en tres partes clave:
 
 ---
 
-## 3. Ejemplos Prácticos (Copy & Paste)
+### Ejemplos Prácticos (Copy & Paste)
 
 Aquí tienes 3 niveles de políticas, desde lo básico hasta lo avanzado.
 
-### Nivel 1: Aislamiento L3/L4 (El Muro Básico)
+#### Nivel 1: Aislamiento L3/L4 (El Muro Básico)
 
 *Caso de uso:* Proteger una base de datos. Solo el backend puede hablarle en el puerto 3306.
 
@@ -705,7 +714,7 @@ spec:
 
 ```
 
-### Nivel 2: Filtrado DNS / FQDN (Salida Controlada)
+#### Nivel 2: Filtrado DNS / FQDN (Salida Controlada)
 
 *Caso de uso:* Un pod necesita descargar actualizaciones de `github.com`, pero no quieres que tenga acceso a todo internet para evitar exfiltración de datos.
 
@@ -738,7 +747,7 @@ spec:
 
 ```
 
-### Nivel 3: Filtrado HTTP L7 (El Guardia Inteligente)
+#### Nivel 3: Filtrado HTTP L7 (El Guardia Inteligente)
 
 *Caso de uso:* Tienes una API pública. Quieres que el mundo vea los datos (`GET`), pero que nadie pueda borrarlos (`DELETE`) excepto una IP de administración interna.
 
@@ -768,9 +777,9 @@ spec:
 
 ---
 
-## 4. Aplicación y Verificación
+### Aplicación y Verificación
 
-### Paso A: Aplicar la política
+#### Paso A: Aplicar la política
 
 Se aplica igual que cualquier manifiesto de Kubernetes:
 
@@ -779,7 +788,7 @@ kubectl apply -f mi-politica-cilium.yaml
 
 ```
 
-### Paso B: Verificar el estado
+#### Paso B: Verificar el estado
 
 Cilium tiene su propio estado para las políticas. Verifica que esté cargada:
 
@@ -790,7 +799,7 @@ kubectl describe cnp mi-politica-cilium
 
 ```
 
-### Paso C: Auditoría con Hubble (La prueba real)
+#### Paso C: Auditoría con Hubble (La prueba real)
 
 Si ya instalaste Hubble (guía anterior), úsalo para ver si tu política está bloqueando (`DROP`) o permitiendo (`FORWARD`) el tráfico en vivo:
 
@@ -802,7 +811,7 @@ hubble observe --verdict DROP
 
 ---
 
-## 5. ¡Cuidado! El Principio de "Default Deny"
+### ¡Cuidado! El Principio de "Default Deny"
 
 Es vital entender esto: **En el momento en que aplicas UNA política** que selecciona a un Pod (ej. `app: database`), Cilium cambia automáticamente el modo de ese pod a **"Denegar todo por defecto"**.
 
@@ -813,7 +822,7 @@ Es vital entender esto: **En el momento en que aplicas UNA política** que selec
 
 ---
 
-## 💡 Herramienta Recomendada: Network Policy Editor
+## Herramienta Recomendada: Network Policy Editor
 
 Escribir YAML desde cero es propenso a errores. Cilium ofrece un editor visual gratuito que genera el YAML por ti:
 
@@ -822,3 +831,123 @@ Escribir YAML desde cero es propenso a errores. Cilium ofrece un editor visual g
 Puedes dibujar visualmente "El frontend habla con el backend" y te dará el código listo para copiar.
 
 ## RBAC
+
+El control de acceso basado en roles (**RBAC**), es el estándar de oro para decidir "quién puede hacer qué" dentro de tu clúster.
+
+RBAC es vital para que, por ejemplo, el equipo de backups solo pueda gestionar recursos de **Bacula** sin tocar la configuración de red o los nodos.
+
+
+### Conceptos Fundamentales de RBAC
+
+RBAC se basa en cuatro objetos principales que se dividen en dos niveles:
+
+| Objeto | Alcance | Descripción |
+| --- | --- | --- |
+| **Role** | Namespace | Define permisos (get, list, watch, create) dentro de un namespace específico. |
+| **ClusterRole** | Todo el Clúster | Define permisos en todo el clúster o sobre objetos no segmentados (como Nodos). |
+| **RoleBinding** | Namespace | Vincula un usuario o grupo a un `Role`. |
+| **ClusterRoleBinding** | Todo el Clúster | Vincula un usuario o grupo a un `ClusterRole`. |
+
+### Creación de un Rol (Role)
+
+Supongamos que quieres que un usuario pueda ver y gestionar pods en el namespace de `bacula`.
+
+**Archivo: `role-backup-manager.yaml**`
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: bacula
+  name: pod-manager
+rules:
+- apiGroups: [""] # "" indica el API core
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+
+```
+
+## 2. Asignación del Rol (RoleBinding)
+
+Ahora vinculamos ese rol a un usuario específico (en este caso, `adrian`).
+
+**Archivo: `binding-backup-manager.yaml**`
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: adrian-pod-manager
+  namespace: bacula
+subjects:
+- kind: User
+  name: adrian
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: pod-manager
+  apiGroup: rbac.authorization.k8s.io
+
+```
+
+---
+
+## 3. Roles a Nivel de Clúster (ClusterRole)
+
+Si necesitas que alguien pueda ver los **Nodos** o las **CiliumNetworkPolicies** en todo el clúster, usas un `ClusterRole`.
+
+**Ejemplo para auditoría de Red:**
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: network-auditor
+rules:
+- apiGroups: ["cilium.io"]
+  resources: ["ciliumnetworkpolicies", "ciliumnodes"]
+  verbs: ["get", "list", "watch"]
+
+```
+
+---
+
+## 4. Comandos de Uso y Verificación
+
+Una vez aplicados los archivos con `kubectl apply -f ...`, puedes verificar los permisos rápidamente:
+
+### Verificar permisos actuales
+
+¿Puedo yo (o un usuario específico) realizar una acción?
+
+```bash
+# ¿Puedo listar pods en el namespace bacula?
+kubectl auth can-i list pods -n bacula
+
+# ¿Puede el usuario 'adrian' borrar servicios?
+kubectl auth can-i delete services -n bacula --as adrian
+
+```
+
+### Listar Roles y Vínculos
+
+```bash
+# Ver roles en un namespace
+kubectl get roles -n bacula
+
+# Ver quién tiene permisos en todo el clúster
+kubectl get clusterrolebindings
+
+```
+
+---
+
+## Buenas Prácticas (Principio de Menor Privilegio)
+
+1. **Evita `cluster-admin`:** No des permisos de administrador global a menos que sea estrictamente necesario.
+2. **Usa Namespaces:** Limita a los usuarios a sus áreas de trabajo (ej. `django-dev`, `backup-ops`).
+3. **Audita con Hubble:** Como ya tienes **Hubble**, puedes ver qué identidades están intentando realizar llamadas a la API que son rechazadas por falta de permisos.
+
+---
+
+**¿Te gustaría que te ayude a crear un ServiceAccount específico para que tus agentes de Bacula puedan interactuar con la API de Kubernetes de forma segura?**
